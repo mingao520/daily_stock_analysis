@@ -3,7 +3,7 @@ name: 每日股票分析
 on:
   # 定时触发 - 每天北京时间 18:00 (UTC 10:00)
   schedule:
-    - cron: '0 10 * * 1-5'  # 周一到周五，UTC 10:00 = 北京时间 18:00
+    - cron: '0 10 * * 1-5'  # 周一到周五
   
   # 手动触发
   workflow_dispatch:
@@ -14,94 +14,121 @@ on:
         default: 'full'
         type: choice
         options:
-          - full          # 完整分析（股票+大盘）
-          - market-only   # 仅大盘复盘
-          - stocks-only   # 仅股票分析
+          - full
+          - market-only
+          - stocks-only
+
+# 防止并发重复执行
+concurrency:
+  group: daily-stock-analysis
+  cancel-in-progress: true
 
 jobs:
   analyze:
     runs-on: ubuntu-latest
-    
+    timeout-minutes: 30
+
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
-      
+
       - name: 设置 Python 环境
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
-      
+
       - name: 安装依赖
         run: |
-          pip install --upgrade pip
+          python -m pip install --upgrade pip
           pip install -r requirements.txt
-      
+
       - name: 创建必要目录
         run: |
           mkdir -p data logs reports
-      
+
       - name: 执行股票分析
         env:
-          # Gemini AI
+          # ===== Gemini =====
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_MODEL: ${{ vars.GEMINI_MODEL || secrets.GEMINI_MODEL || 'gemini-3-flash-preview' }}
-          GEMINI_MODEL_FALLBACK: ${{ vars.GEMINI_MODEL_FALLBACK || secrets.GEMINI_MODEL_FALLBACK || 'gemini-2.5-flash' }}
-          GEMINI_REQUEST_DELAY: '3.0'  # GitHub Actions 建议增加延时
-          
-          # 数据源 (可选)
+          GEMINI_MODEL_VAR: ${{ vars.GEMINI_MODEL }}
+          GEMINI_MODEL_SECRET: ${{ secrets.GEMINI_MODEL }}
+          GEMINI_MODEL_FALLBACK_VAR: ${{ vars.GEMINI_MODEL_FALLBACK }}
+          GEMINI_MODEL_FALLBACK_SECRET: ${{ secrets.GEMINI_MODEL_FALLBACK }}
+          GEMINI_REQUEST_DELAY: '3.0'
+
+          # ===== 数据源 =====
           TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
-          
-          # 搜索服务
+
+          # ===== 搜索服务 =====
           BOCHA_API_KEYS: ${{ secrets.BOCHA_API_KEYS }}
           TAVILY_API_KEYS: ${{ secrets.TAVILY_API_KEYS }}
           SERPAPI_API_KEYS: ${{ secrets.SERPAPI_API_KEYS }}
-          
-          # OpenAI 兼容 API（备选）
+
+          # ===== OpenAI 兼容 =====
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL || secrets.OPENAI_BASE_URL }}
-          OPENAI_MODEL: ${{ vars.OPENAI_MODEL || secrets.OPENAI_MODEL }}
-          
-          # 通知渠道（可同时配置多个，全部推送）
-          # 方式一：企业微信
+          OPENAI_BASE_URL_VAR: ${{ vars.OPENAI_BASE_URL }}
+          OPENAI_BASE_URL_SECRET: ${{ secrets.OPENAI_BASE_URL }}
+          OPENAI_MODEL_VAR: ${{ vars.OPENAI_MODEL }}
+          OPENAI_MODEL_SECRET: ${{ secrets.OPENAI_MODEL }}
+
+          # ===== 通知渠道 =====
           WECHAT_WEBHOOK_URL: ${{ secrets.WECHAT_WEBHOOK_URL }}
-          # 方式二：飞书
           FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
-          # 方式三：Telegram（需同时配置 Bot Token 和 Chat ID）
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          # 方式四：邮件（只需邮箱和授权码，SMTP自动识别）
-          EMAIL_SENDER: ${{ vars.EMAIL_SENDER || secrets.EMAIL_SENDER }}
+
+          EMAIL_SENDER_VAR: ${{ vars.EMAIL_SENDER }}
+          EMAIL_SENDER_SECRET: ${{ secrets.EMAIL_SENDER }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
-          EMAIL_RECEIVERS: ${{ vars.EMAIL_RECEIVERS || secrets.EMAIL_RECEIVERS }}
-          # 方式五：自定义 Webhook（支持钉钉、Discord、Slack、Bark等，多个用逗号分隔）
+          EMAIL_RECEIVERS_VAR: ${{ vars.EMAIL_RECEIVERS }}
+          EMAIL_RECEIVERS_SECRET: ${{ secrets.EMAIL_RECEIVERS }}
+
           CUSTOM_WEBHOOK_URLS: ${{ secrets.CUSTOM_WEBHOOK_URLS }}
           CUSTOM_WEBHOOK_BEARER_TOKEN: ${{ secrets.CUSTOM_WEBHOOK_BEARER_TOKEN }}
-          # 方式六：飞书文档
+
           FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
           FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
           FEISHU_FOLDER_TOKEN: ${{ secrets.FEISHU_FOLDER_TOKEN }}
 
-          
-          # 自选股列表 (从 secrets 或使用默认值)
-          STOCK_LIST: ${{ vars.STOCK_LIST || secrets.STOCK_LIST || '600519' }}
-          
-          # 其他配置
+          # ===== 自选股 =====
+          STOCK_LIST_VAR: ${{ vars.STOCK_LIST }}
+          STOCK_LIST_SECRET: ${{ secrets.STOCK_LIST }}
+
+          # ===== 其他 =====
           LOG_LEVEL: INFO
           DATA_DAYS: 60
           MAX_CONCURRENT: 3
+
         run: |
-          # 判断运行模式
-          MODE="${{ github.event.inputs.mode || 'full' }}"
-          
+          set -e
+
+          # -------- 运行模式 --------
+          MODE="${{ github.event.inputs.mode }}"
+          MODE="${MODE:-full}"
+
+          # -------- Gemini 模型 fallback --------
+          export GEMINI_MODEL="${GEMINI_MODEL_VAR:-${GEMINI_MODEL_SECRET:-gemini-3-flash-preview}}"
+          export GEMINI_MODEL_FALLBACK="${GEMINI_MODEL_FALLBACK_VAR:-${GEMINI_MODEL_FALLBACK_SECRET:-gemini-2.5-flash}}"
+
+          # -------- OpenAI fallback --------
+          export OPENAI_BASE_URL="${OPENAI_BASE_URL_VAR:-${OPENAI_BASE_URL_SECRET}}"
+          export OPENAI_MODEL="${OPENAI_MODEL_VAR:-${OPENAI_MODEL_SECRET}}"
+
+          # -------- Email fallback --------
+          export EMAIL_SENDER="${EMAIL_SENDER_VAR:-${EMAIL_SENDER_SECRET}}"
+          export EMAIL_RECEIVERS="${EMAIL_RECEIVERS_VAR:-${EMAIL_RECEIVERS_SECRET}}"
+
+          # -------- 股票列表 fallback --------
+          export STOCK_LIST="${STOCK_LIST_VAR:-${STOCK_LIST_SECRET:-600519}}"
+
           echo "=========================================="
           echo "运行模式: $MODE"
           echo "自选股: $STOCK_LIST"
+          echo "Gemini Model: $GEMINI_MODEL"
           echo "时间: $(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')"
-          echo "BOCHA_API_KEYS 是否配置: $([ -n "$BOCHA_API_KEYS" ] && echo '是' || echo '否')"
-          echo "BOCHA_API_KEYS 长度: ${#BOCHA_API_KEYS}"
           echo "=========================================="
-          
+
           if [ "$MODE" = "market-only" ]; then
             python main.py --market-review
           elif [ "$MODE" = "stocks-only" ]; then
@@ -109,24 +136,21 @@ jobs:
           else
             python main.py
           fi
-      
+
       - name: 上传分析报告
-        uses: actions/upload-artifact@v4
         if: always()
+        uses: actions/upload-artifact@v4
         with:
-          name: analysis-reports-${{ github.run_number }}
+          name: analysis-reports-${{ github.run_number }}-${{ github.ref_name }}
           path: |
             reports/
             logs/
           retention-days: 30
-      
+
       - name: 显示运行结果
         if: always()
         run: |
           echo "=========================================="
           echo "分析完成"
           echo "=========================================="
-          if [ -d "reports" ]; then
-            echo "生成的报告:"
-            ls -la reports/
-          fi
+          ls -la reports || true
